@@ -38,6 +38,7 @@ android_app {
 
     platform_apis: true,
     privileged: true,
+    system_ext_specific: true,
     certificate: "platform",
     optimize: {
         enabled: false,
@@ -56,6 +57,7 @@ cc_prebuilt_library_shared {
     compile_multilib: "64",
     check_elf_files: false,
     prefer: true,
+    system_ext_specific: true,
 }
 
 cc_prebuilt_library_shared {
@@ -71,6 +73,7 @@ cc_prebuilt_library_shared {
     compile_multilib: "64",
     check_elf_files: false,
     prefer: true,
+    system_ext_specific: true,
 }
 
 cc_prebuilt_library_shared {
@@ -85,6 +88,7 @@ cc_prebuilt_library_shared {
     compile_multilib: "64",
     check_elf_files: false,
     prefer: true,
+    system_ext_specific: true,
 }
 
 cc_prebuilt_library_shared {
@@ -99,6 +103,7 @@ cc_prebuilt_library_shared {
     compile_multilib: "64",
     check_elf_files: false,
     prefer: true,
+    system_ext_specific: true,
 }
 
 java_import {
@@ -111,16 +116,19 @@ prebuilt_etc {
     name: "default_permissions_com.android.faceunlock.xml",
     src: "permissions/default_permissions_com.android.faceunlock.xml",
     sub_dir: "default-permissions",
+    system_ext_specific: true,
 }
 
 prebuilt_etc {
     name: "hiddenapi-whitelist-com.android.faceunlock.xml",
     src: "permissions/hiddenapi-whitelist-com.android.faceunlock.xml",
     sub_dir: "sysconfig",
+    system_ext_specific: true,
 }
 
 prebuilt_etc {
     name: "privapp_whitelist_com.android.faceunlock.xml",
     src: "permissions/privapp_whitelist_com.android.faceunlock.xml",
     sub_dir: "permissions",
+    system_ext_specific: true,
 }
