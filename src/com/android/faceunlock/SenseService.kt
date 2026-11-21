@@ -42,9 +42,8 @@ class SenseService : Service() {
     private var mSenseReceiver: ISenseServiceReceiver? = null
     private lateinit var mUserContext: Context
     private var mPreferenceHelper: PreferenceHelper? = null
-    private var mVendorImpl: Vendor? = null
+    @Volatile private var mVendorImpl: Vendor? = null
     private val mUserStates = mutableMapOf<Int, UserState>()
-    private var mIsVendorInit = false
     private var mCameraId = 0
     private var mChallengeCount = 0
     private var mUserId = 0
@@ -121,18 +120,19 @@ class SenseService : Service() {
     private val mCameraAuthControllerCallback: FaceAuthenticationController.ServiceCallback =
         object : FaceAuthenticationController.ServiceCallback {
             override fun handlePreviewData(data: ByteArray?, width: Int, height: Int): Int {
+                val vendor = mVendorImpl ?: return -1
                 val imageData = IntArray(20)
                 if (Util.IS_DEBUG_LOGGING) {
                     Log.d(TAG, "handleData start")
                 }
-                val result = mVendorImpl!!.compare(data, width, height, 0, true, true, imageData)
+                val result = vendor.compare(data, width, height, 0, true, true, imageData)
                 if (Util.IS_DEBUG_LOGGING) Log.d(
                     TAG, "handlePreviewData result = " + result +
                             " run: fake = " + imageData[0] + ", low = " + imageData[1] +
                             ", compare score:" + imageData[2] + " live score:" + imageData[3].toDouble() / 100.0
                 )
-                synchronized(this) {
-                    if (mCameraAuthController == null) {
+                synchronized(this@SenseService) {
+                    if (mVendorImpl !== vendor || mCameraAuthController == null) {
                         return -1
                     }
                     if (result == 0) {
@@ -144,7 +144,7 @@ class SenseService : Service() {
             }
 
             override fun setDetectArea(size: Camera.Size?) {
-                mVendorImpl!!.setDetectArea(0, 0, size!!.height, size.width)
+                size?.let { mVendorImpl?.setDetectArea(0, 0, it.height, it.width) }
             }
 
             override fun onTimeout(withFace: Boolean) {
@@ -192,8 +192,9 @@ class SenseService : Service() {
             height: Int,
             angle: Int
         ): Int {
+            val vendor = mVendorImpl ?: return -1
             val imageData = IntArray(1)
-            val result = mVendorImpl!!.saveFeature(
+            val result = vendor.saveFeature(
                 data,
                 width,
                 height,
@@ -204,7 +205,7 @@ class SenseService : Service() {
                 imageData
             )
             synchronized(this) {
-                if (mCameraEnrollController == null) {
+                if (mVendorImpl !== vendor || mCameraEnrollController == null) {
                     return -1
                 }
                 try {
@@ -213,7 +214,7 @@ class SenseService : Service() {
                         val faceId: Int =
                             mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
                         if (faceId > 0) {
-                            mVendorImpl!!.deleteFeature(faceId)
+                            vendor.deleteFeature(faceId)
                         }
                         mPreferenceHelper!!.saveIntValue(Constants.SHARED_KEY_FACE_ID, faceIds)
                         mPreferenceHelper!!.saveByteArrayValue(
@@ -234,7 +235,7 @@ class SenseService : Service() {
         }
 
         override fun setDetectArea(size: Camera.Size?) {
-            mVendorImpl!!.setDetectArea(0, 0, size!!.height, size.width)
+            size?.let { mVendorImpl?.setDetectArea(0, 0, it.height, it.width) }
         }
 
         override fun onTimeout() {
@@ -293,7 +294,14 @@ class SenseService : Service() {
         if (Util.IS_DEBUG_LOGGING) {
             Log.d(TAG, "onDestroy")
         }
-        mVendorImpl?.release()
+        synchronized(this) {
+            mWorkHandler?.removeCallbacksAndMessages(null)
+            stopCurrentWork()
+            mVendorImpl?.release()
+            mVendorImpl = null
+        }
+        mCameraManager?.unregisterAvailabilityCallback(mCameraAvailabilityCallback)
+        mWorkHandler?.looper?.quitSafely()
         unregisterReceiver(mReceiver)
     }
 
@@ -315,13 +323,13 @@ class SenseService : Service() {
                 mUserUnlocked
             )
             mVendorImpl?.release()
+            mVendorImpl = null
         }
 
         val state = mUserStates.getOrPut(userId) { UserState() }
         mUserId = userId
         mUserContext = SenseUserContext(this, userId)
         mPreferenceHelper = PreferenceHelper(mUserContext)
-        mVendorImpl = VendorImpl(mUserContext)
         mAuthenticationErrorCount = state.authenticationErrorCount
         mAuthenticationErrorThrottleCount = state.authenticationErrorThrottleCount
         mLockoutType = state.lockoutType
@@ -334,8 +342,6 @@ class SenseService : Service() {
         mChallengeCount = 0
         mEnrollToken = null
         mIsAuthenticated = false
-        mIsVendorInit = false
-        mWorkHandler!!.post { initVendor() }
     }
 
     private fun timerIntent(action: String, userId: Int): PendingIntent =
@@ -346,12 +352,9 @@ class SenseService : Service() {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-    private fun initVendor() {
-        if (mIsVendorInit || Util.isFaceUnlockDisabledByDPM(mUserContext)) {
-            return
-        }
-        mVendorImpl!!.init()
-        mIsVendorInit = true
+    private fun getOrInitVendor(): Vendor = mVendorImpl ?: VendorImpl(mUserContext).also {
+        it.init()
+        mVendorImpl = it
     }
 
     private fun onAuthenticated() {
@@ -374,7 +377,7 @@ class SenseService : Service() {
         mCameraEnrollController?.stop(mCameraEnrollServiceCallback)
         mCameraEnrollController = null
         mEnrollToken = null
-        mVendorImpl!!.saveFeatureStop()
+        mVendorImpl?.saveFeatureStop()
     }
 
     private fun stopAuthentication() {
@@ -382,7 +385,7 @@ class SenseService : Service() {
             mCameraAuthController?.stop()
             mCameraAuthController = null
         }
-        mVendorImpl!!.compareStop()
+        mVendorImpl?.compareStop()
     }
 
     private fun stopCurrentWork() {
@@ -520,17 +523,19 @@ class SenseService : Service() {
                     e.printStackTrace()
                 }
             } else {
-                mEnrollToken = cryptoToken
-                val faceId: Int = mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
-                if (faceId > 0) {
-                    mVendorImpl!!.deleteFeature(faceId - 1)
-                    mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_FACE_ID)
-                    mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_ENROLL_TOKEN)
-                }
-                resetLockoutCount()
                 mWorkHandler!!.post {
-                    mVendorImpl!!.saveFeatureStart()
-                    synchronized(this) {
+                    synchronized(this@SenseService) {
+                        if (userId != mUserId) return@post
+                        val vendor = getOrInitVendor()
+                        mEnrollToken = cryptoToken
+                        val faceId = mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
+                        if (faceId > 0) {
+                            vendor.deleteFeature(faceId - 1)
+                            mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_FACE_ID)
+                            mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_ENROLL_TOKEN)
+                        }
+                        resetLockoutCount()
+                        vendor.saveFeatureStart()
                         if (mCameraEnrollController == null) {
                             mCameraEnrollController = FaceEnrollController.instance
                         }
@@ -560,9 +565,9 @@ class SenseService : Service() {
 
         override fun authenticate(operationId: Long) {
             activateUser()
-            mCameraManager!!.registerAvailabilityCallback(mCameraAvailabilityCallback, mWorkHandler)
             if (Util.IS_DEBUG_LOGGING) Log.d(TAG, "authenticate")
-            if (!Util.isFaceUnlockAvailable(mUserContext) ||
+            if (mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID) <= 0 ||
+                !Util.isFaceUnlockAvailable(mUserContext) ||
                 ContextCompat.checkSelfPermission(
                     this@SenseService.applicationContext,
                     Manifest.permission.CAMERA
@@ -583,8 +588,10 @@ class SenseService : Service() {
                 sendLockoutError()
             } else {
                 mWorkHandler!!.post {
-                    mVendorImpl!!.compareStart()
-                    synchronized(this) {
+                    synchronized(this@SenseService) {
+                        if (userId != mUserId) return@post
+                        mCameraManager!!.registerAvailabilityCallback(mCameraAvailabilityCallback, mWorkHandler)
+                        getOrInitVendor().compareStart()
                         if (mCameraAuthController == null) {
                             mCameraAuthController = FaceAuthenticationController(
                                 this@SenseService,
@@ -603,22 +610,25 @@ class SenseService : Service() {
             activateUser()
             if (Util.IS_DEBUG_LOGGING) Log.d(TAG, "remove")
             mWorkHandler!!.post {
-                val faceId: Int = mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
-                if (!(biometricId == 0 || faceId == biometricId)) {
-                    Log.e(TAG, "Removing biometricId: $biometricId")
-                }
-                mVendorImpl!!.deleteFeature(faceId - 1)
-                mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_FACE_ID)
-                mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_ENROLL_TOKEN)
-                Util.setFaceUnlockAvailable(mUserContext)
-                try {
-                    if (biometricId == 0) {
-                        mSenseReceiver?.onRemoved(intArrayOf(faceId), mUserId)
-                    } else {
-                        mSenseReceiver?.onRemoved(intArrayOf(biometricId), mUserId)
+                synchronized(this@SenseService) {
+                    if (userId != mUserId) return@post
+                    val faceId: Int = mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
+                    if (!(biometricId == 0 || faceId == biometricId)) {
+                        Log.e(TAG, "Removing biometricId: $biometricId")
                     }
-                } catch (e: RemoteException) {
-                    e.printStackTrace()
+                    if (faceId > 0) getOrInitVendor().deleteFeature(faceId - 1)
+                    mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_FACE_ID)
+                    mPreferenceHelper!!.removeSharePreferences(Constants.SHARED_KEY_ENROLL_TOKEN)
+                    Util.setFaceUnlockAvailable(mUserContext)
+                    try {
+                        if (biometricId == 0) {
+                            mSenseReceiver?.onRemoved(intArrayOf(faceId), mUserId)
+                        } else {
+                            mSenseReceiver?.onRemoved(intArrayOf(biometricId), mUserId)
+                        }
+                    } catch (e: RemoteException) {
+                        e.printStackTrace()
+                    }
                 }
             }
         }
