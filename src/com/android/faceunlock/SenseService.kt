@@ -204,20 +204,21 @@ class SenseService : Service() {
                 mImage,
                 imageData
             )
-            synchronized(this) {
+            synchronized(this@SenseService) {
                 if (mVendorImpl !== vendor || mCameraEnrollController == null) {
                     return -1
                 }
                 try {
                     val faceIds = imageData[0] + 1
                     if (result == 0) {
+                        val prefHelper = mPreferenceHelper ?: return -1
                         val faceId: Int =
-                            mPreferenceHelper!!.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
+                            prefHelper.getIntValueByKey(Constants.SHARED_KEY_FACE_ID)
                         if (faceId > 0) {
                             vendor.deleteFeature(faceId)
                         }
-                        mPreferenceHelper!!.saveIntValue(Constants.SHARED_KEY_FACE_ID, faceIds)
-                        mPreferenceHelper!!.saveByteArrayValue(
+                        prefHelper.saveIntValue(Constants.SHARED_KEY_FACE_ID, faceIds)
+                        prefHelper.saveByteArrayValue(
                             Constants.SHARED_KEY_ENROLL_TOKEN,
                             mEnrollToken
                         )
